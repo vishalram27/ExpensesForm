@@ -1,0 +1,299 @@
+Step 1: Project Setup
+Create a Spring Boot Project
+
+Go to Spring Initializr.
+Select Maven Project, Java 11 or higher.
+Add the following dependencies:
+Spring Web (for REST API)
+Thymeleaf (for front-end templating)
+Spring Data JPA (for database interaction)
+MySQL Driver (for MySQL database)
+Spring Boot DevTools (for hot-reload)
+Generate and download the project.
+Directory Structure Your project structure should look like this:
+
+css
+
+src
+└── main
+    ├── java
+    │   └── com
+    │       └── example
+    │           └── reimbursement
+    │               ├── controller
+    │               ├── entity
+    │               ├── repository
+    │               └── service
+    ├── resources
+    │   ├── templates
+    │   └── application.properties
+    └── uploads  (create manually in the root directory for file storage)
+Step 2: Database Configuration (MySQL)
+In src/main/resources/application.properties, configure your MySQL database:
+
+properties
+
+spring.datasource.url=jdbc:mysql://localhost:3306/amms
+spring.datasource.username=root
+spring.datasource.password=yourpassword
+
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQL8Dialect
+Step 3: Entity Class (Reimbursement.java)
+This is your JPA entity class where form data will be saved.
+
+java
+
+package com.example.reimbursement.entity;
+
+import javax.persistence.*;
+import java.util.Date;
+
+@Entity
+public class Reimbursement {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String invoiceNo;
+    private Date invoiceDate;
+    private String vendorName;
+    private String purpose;
+    private String staffName;
+    private String clientName;
+    private String projectName;
+    private String gstNumber;
+    private String panNumber;
+    private Date startDate;
+    private Date endDate;
+    private Double amount;
+    private Double amountWithGst;
+
+    private String proofFilePath;
+
+    // Getters and Setters
+    // Add all fields for the form here
+}
+Step 4: Repository Interface (ReimbursementRepository.java)
+Create a simple repository interface for database operations.
+
+java
+Copy code
+package com.example.reimbursement.repository;
+
+import com.example.reimbursement.entity.Reimbursement;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ReimbursementRepository extends JpaRepository<Reimbursement, Long> {
+}
+Step 5: Service Class (ReimbursementService.java)
+This service handles file uploads, text extraction from images and PDFs, and PDF generation.
+
+java
+
+package com.example.reimbursement.service;
+
+import com.example.reimbursement.entity.Reimbursement;
+import com.example.reimbursement.repository.ReimbursementRepository;
+import net.sourceforge.tess4j.Tesseract;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Service
+public class ReimbursementService {
+
+    @Autowired
+    private ReimbursementRepository repository;
+
+    private static final String UPLOAD_FOLDER = "uploads/";
+
+    // Save file locally and return the file path
+    public String saveFile(MultipartFile file) throws Exception {
+        File folder = new File(UPLOAD_FOLDER);
+        if (!folder.exists()) {
+            folder.mkdir(); // Create uploads directory if not exists
+        }
+
+        String filePath = UPLOAD_FOLDER + file.getOriginalFilename();
+        file.transferTo(new File(filePath));
+        return filePath;
+    }
+
+    // Extract text from image or PDF using OCR and PDFBox
+    public Map<String, String> extractTextFromFile(MultipartFile file) throws Exception {
+        Map<String, String> extractedData = new HashMap<>();
+
+        if (file.getOriginalFilename().endsWith(".pdf")) {
+            try (PDDocument document = PDDocument.load(file.getInputStream())) {
+                PDFTextStripper pdfStripper = new PDFTextStripper();
+                String pdfText = pdfStripper.getText(document);
+                extractedData = parseTextForFields(pdfText);
+            }
+        } else {
+            // Extract text from image using Tesseract
+            Tesseract tesseract = new Tesseract();
+            tesseract.setDatapath("tessdata");
+            BufferedImage bufferedImage = ImageIO.read(file.getInputStream());
+            String extractedText = tesseract.doOCR(bufferedImage);
+            extractedData = parseTextForFields(extractedText);
+        }
+
+        return extractedData;
+    }
+
+    // Parse extracted text for relevant fields
+    private Map<String, String> parseTextForFields(String text) {
+        Map<String, String> extractedData = new HashMap<>();
+
+        extractedData.put("invoiceNo", extractValue(text, "Invoice No[:\\s]+(\\S+)"));
+        extractedData.put("vendorName", extractValue(text, "Vendor Name[:\\s]+([A-Za-z\\s]+)"));
+        extractedData.put("gstNumber", extractValue(text, "GST[:\\s]+(\\S+)"));
+        extractedData.put("panNumber", extractValue(text, "PAN[:\\s]+(\\S+)"));
+
+        // Additional fields parsing logic here...
+
+        return extractedData;
+    }
+
+    private String extractValue(String text, String regex) {
+        Pattern pattern = Pattern.compile(regex);
+        Matcher matcher = pattern.matcher(text);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    // Save reimbursement to the database
+    public void saveReimbursement(Reimbursement reimbursement) {
+        repository.save(reimbursement);
+    }
+
+    // Generate PDF for reimbursement details
+    public void generatePdf(Reimbursement reimbursement) throws Exception {
+        Document document = new Document();
+        PdfWriter.getInstance(document, new FileOutputStream("reimbursement_" + reimbursement.getId() + ".pdf"));
+        document.open();
+        document.add(new Paragraph("Invoice No: " + reimbursement.getInvoiceNo()));
+        document.add(new Paragraph("Vendor Name: " + reimbursement.getVendorName()));
+        document.add(new Paragraph("GST Number: " + reimbursement.getGstNumber()));
+        document.add(new Paragraph("PAN Number: " + reimbursement.getPanNumber()));
+        // Add other fields here...
+        document.close();
+    }
+}
+Step 6: Controller Class (ReimbursementController.java)
+This controller handles form submissions and orchestrates the logic for file upload, data extraction, and saving the reimbursement form.
+
+java
+
+package com.example.reimbursement.controller;
+
+import com.example.reimbursement.entity.Reimbursement;
+import com.example.reimbursement.service.ReimbursementService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.Map;
+
+@Controller
+public class ReimbursementController {
+
+    @Autowired
+    private ReimbursementService reimbursementService;
+
+    @PostMapping("/submit")
+    public String submitForm(@ModelAttribute Reimbursement reimbursement,
+                             @RequestParam("file") MultipartFile file,
+                             Model model) {
+        try {
+            // Save uploaded file and extract data
+            String proofFilePath = reimbursementService.saveFile(file);
+            reimbursement.setProofFilePath(proofFilePath);
+
+            Map<String, String> extractedData = reimbursementService.extractTextFromFile(file);
+            if (extractedData.isEmpty()) {
+                model.addAttribute("error", "Unable to read file. Please enter values manually.");
+                return "form"; // return to the form page
+            }
+
+            reimbursement.setInvoiceNo(extractedData.get("invoiceNo"));
+            reimbursement.setVendorName(extractedData.get("vendorName"));
+            reimbursement.setGstNumber(extractedData.get("gstNumber"));
+            reimbursement.setPanNumber(extractedData.get("panNumber"));
+
+            // Save reimbursement to the database
+            reimbursementService.saveReimbursement(reimbursement);
+
+            // Generate a PDF
+            reimbursementService.generatePdf(reimbursement);
+
+            model.addAttribute("message", "Form submitted successfully!");
+        } catch (Exception e) {
+            model.addAttribute("error", "Error processing file. Please enter data manually.");
+        }
+
+        return "formSubmitted";
+    }
+}
+Step 7: Thymeleaf Form (form.html)
+Here’s the form the user will interact with. It allows file uploads and handles the field values.
+
+html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    <title>Expense Reimbursement Form</title>
+
+</head> <body> <div class="container"> <h2>Expense Reimbursement Form</h2> <form th:action="@{/submit}" method="post" enctype="multipart/form-data"> <div class="form-group"> <label for="invoiceNo">Invoice No</label> <input type="text" class="form-control" id="invoiceNo" name="invoiceNo" required> </div> <div class="form-group"> <label for="invoiceDate">Invoice Date</label> <input type="date" class="form-control" id="invoiceDate" name="invoiceDate"> </div> <div class="form-group"> <label for="vendorName">Vendor Name</label> <input type="text" class="form-control" id="vendorName" name="vendorName"> </div> <div class="form-group"> <label for="purpose">Purpose</label> <input type="text" class="form-control" id="purpose" name="purpose"> </div> <div class="form-group"> <label for="staffName">Name of the Staff</label> <input type="text" class="form-control" id="staffName" name="staffName"> </div> <div class="form-group"> <label for="clientName">Client Name</label> <input type="text" class="form-control" id="clientName" name="clientName"> </div> <div class="form-group"> <label for="projectName">Project Name</label> <select class="form-control" id="projectName" name="projectName"> <!-- Add options dynamically or statically --> <option value="Project A">Project A</option> <option value="Project B">Project B</option> </select> </div> <div class="form-group"> <label for="gstNumber">GST Number</label> <input type="text" class="form-control" id="gstNumber" name="gstNumber"> </div> <div class="form-group"> <label for="panNumber">PAN Number</label> <input type="text" class="form-control" id="panNumber" name="panNumber"> </div> <div class="form-group"> <label for="startDate">Start Date</label> <input type="date" class="form-control" id="startDate" name="startDate"> </div> <div class="form-group"> <label for="endDate">End Date</label> <input type="date" class="form-control" id="endDate" name="endDate"> </div> <div class="form-group"> <label for="amount">Amount</label> <input type="number" class="form-control" id="amount" name="amount" step="0.01"> </div> <div class="form-group"> <label for="amountWithGst">Amount with GST</label> <input type="number" class="form-control" id="amountWithGst" name="amountWithGst" step="0.01"> </div> <div class="form-group"> <label for="file">Upload Proof (png, jpg, jpeg, pdf)</label> <input type="file" class="form-control-file" id="file" name="file" accept=".png,.jpg,.jpeg,.pdf" required> </div> <button type="submit" class="btn btn-primary">Submit</button> </form>
+bash
+Copy code
+    <div th:if="${error}">
+        <div class="alert alert-danger" th:text="${error}"></div>
+    </div>
+    <div th:if="${message}">
+        <div class="alert alert-success" th:text="${message}"></div>
+    </div>
+</div>
+</body> </html> ```
+Additional Notes
+Tesseract OCR Setup:
+
+Download Tesseract OCR from Tesseract's official site.
+Place the Tesseract executable and tessdata folder in a directory and update the tesseract.setDatapath("path_to_tessdata") accordingly.
+Folder Creation:
+
+uploads/ folder should be created manually in the root of the project directory.
+Dependencies:
+
+Ensure you have the necessary dependencies in your pom.xml for Tesseract and PDFBox:
+xml
+
+<dependency>
+    <groupId>net.sourceforge.tess4j</groupId>
+    <artifactId>tess4j</artifactId>
+    <version>4.5.3</version>
+</dependency>
+<dependency>
+    <groupId>org.apache.pdfbox</groupId>
+    <artifactId>pdfbox</artifactId>
+    <version>2.0.28</version>
+</dependency>
